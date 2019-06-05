@@ -1,0 +1,33 @@
+package com.laboros.sparkenv
+
+object SparkHiveInteg {
+	def main(args: Array[String]): Unit = {
+			import org.apache.spark.sql.SparkSession;
+      System.setProperty("hadoop.home.dir","D:\\hadoop\\");
+      import org.apache.spark.sql.functions._
+      
+      val spark = SparkSession.builder().appName("SparkHiveInteg")
+					.config("spark.sql.catalogImplementation", "hive")
+					.config("spark.sql.warehouse.dir", "/user/hive/warehouse")
+					.master("local[*]").enableHiveSupport().getOrCreate();
+          
+     // Reading data from txt files     
+    val NewFile = spark.read.format("csv").option("header","true").load("file:///c:/Users/user/Desktop/xyz.txt").withColumn("Time", lit(2))
+    val OldFile = spark.read.format("csv").option("header","true").load("file:///c:/Users/user/Desktop/employee.txt").withColumn("Time", lit(1))
+    
+    // Joining two tables
+    val out = NewFile.union(OldFile)
+    
+    // creating temppview
+    out.createOrReplaceTempView("tbl")
+    
+    // Giving ranking
+    spark.sql("select *, row_number() over(partition by Id order by Name desc) as ranking from tbl").show()
+    // Replacing current records with Updated records 
+    val nt = spark.sql("select * from(select *, row_number() over(partition by Id order by Name desc) as ranking from tbl) where ranking=1").drop("Time","ranking")
+    
+    // Creating Temp view from output and creating a table from it
+    nt.show()
+    nt.createOrReplaceTempView("ntt")
+    spark.sql("create table mytbl as select * from ntt").show()
+    
