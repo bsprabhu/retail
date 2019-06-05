@@ -31,3 +31,5 @@ object SparkHiveInteg {
     nt.createOrReplaceTempView("ntt")
     spark.sql("create table mytbl as select * from ntt").show()
     
+	}
+}
