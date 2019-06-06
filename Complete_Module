@@ -1,0 +1,152 @@
+package com.laboros.interview
+
+object Final {
+  def main(args: Array[String]): Unit = {
+    
+    import org.apache.spark.sql.SparkSession
+    import org.apache.spark.sql.functions._
+    import org.apache.spark.sql.SparkSession
+    import org.apache.spark.sql.expressions.Window
+    
+    System.setProperty("hadoop.home.dir", "D:\\hadoop\\")
+    
+    val spark = SparkSession.builder().appName("SparkHiveInteg")
+					.config("spark.sql.catalogImplementation", "hive")
+					.config("spark.sql.warehouse.dir", "/user/hive/warehouse")
+					.master("local[*]").enableHiveSupport().getOrCreate();
+    
+    /*----------------- Working with LandingLayer -----------------*/
+    
+    //Loading Dataset from FileServer
+    val Customers_Data = spark.read.format("csv").option("header", "true").load("file:///c:/Users/user/Desktop/NewCx.txt")
+    Customers_Data.show()
+    
+    // Storing Dataset in LandingLayer
+    Customers_Data.coalesce(1).rdd.saveAsTextFile("D:/LandiingLayer")
+    
+    /*----------------- Working with StagingLayer -----------------*/
+    
+     val Ndf = Customers_Data.filter(col("CustId") !== " ").filter(col("CustName") !== " ").filter(col("Address") !== " ").filter(col("OrderDate") !== " ").filter(col("Sal") !== " ")
+     .select(
+     regexp_replace(col("CustId"), " ", "").as("CustId"),
+     regexp_replace(col("CustName"), " ", "").as("CustName"),
+     regexp_replace(col("Address"), " ", "").as("Address"),
+     regexp_replace(col("OrderDate"), " ", "").as("OrderDateOlds"),
+     regexp_replace(col("Sal"), " ", "").as("Sal"),
+     length(col("CustName")),col("OrderDate").cast("date").as("Date_DataType"),date_format(col("OrderDate"), "dd/MM/yyyy").as("OrderDate")
+     )
+     Ndf.show()
+
+     val cx = Ndf.select("CustId","CustName","Address","OrderDate","Sal").withColumn("Time", lit(2))
+     
+     //Writing this resulted file into StagingLayer
+    cx.coalesce(1).rdd.saveAsTextFile("D:/StagingLayer")
+    
+   /*----------------- Working with FoundationLayer -----------------*/
+    
+    //Joining above Table along with foundationLaer existing Table
+    //1.adding new records ------[while doing union join, new records will add]
+    val ExistingData = spark.read.format("csv").option("header", "true").load("file:///c:/Users/user/Desktop/Cx.txt").withColumn("Time", lit(1))
+    val MergedData = cx.union(ExistingData) // adding tables 
+    
+    MergedData.createOrReplaceTempView("CxTemp")
+    
+    spark.sql("select *, row_number() over(partition by CustId order by CustName desc) as ranking from CxTemp").show()
+    val FinalData = spark.sql("select * from(select *, row_number() over(partition by CustId order by CustName desc) as ranking from CxTemp) where ranking=1").drop("Time","ranking")
+    
+    FinalData.show()
+    
+    FinalData.createOrReplaceTempView("FinalDataTemp")
+    spark.sql("create table mytbl as select * from FinalDataTemp").show()
+       
+  
+    
+   /*----------------- Working with WindowsFunctions -----------------*/
+    import spark.implicits._
+    val partitionWnd = Window.partitionBy($"Address").orderBy($"sal".desc)
+    ExistingData.createTempView("employee")
+    
+  //Rank
+    // using DF
+    val rankTst = rank().over(partitionWnd)
+    ExistingData.select($"CustName",$"Address",$"sal", rankTst as "rank").show
+    //Using SQL
+    spark.sql("SELECT empno,deptno,sal,RANK() OVER (partition by deptno ORDER BY sal desc) as rank FROM employee").show()
+    
+  //Dense Rank
+    // using Sql
+    spark.sql("SELECT empno,deptno,sal,DENSE_RANK() OVER (PARTITION BY deptno ORDER BY sal desc) as dense_rank FROM emp").show()
+    
+    val DensTst = dense_rank().over(partitionWnd)
+    ExistingData.select($"*", DensTst as "dense_rank").show
+    
+  //Giving Row Number within each department
+    // using Sql
+    spark.sql("SELECT empno,deptno,sal,ROW_NUMBER() OVER (PARTITION BY deptno ORDER BY sal desc) as row_num FROM emp").show()
+    
+    val rowNumTest = row_number().over(partitionWnd)
+    ExistingData.select($"*", rowNumTest as "row_number").show
+    
+  // Running Total (Salary) within each department  
+    val sumTet = sum($"sal").over(partitionWnd)
+    ExistingData.select($"*", sumTet as "running_total").show
+    
+    spark.sql("SELECT empno,deptno,sal,sum(sal) OVER (PARTITION BY deptno ORDER BY sal desc) as running_total FROM emp").show()
+
+  //Lead function 
+    spark.sql("SELECT empno,deptno,sal,lead(sal) OVER (PARTITION BY deptno ORDER BY sal desc) as next_val FROM emp").show()
+    
+    val leadTst = lead($"sal", 1, 0).over(partitionWnd)
+    ExistingData.select($"*", leadTst as "next_val").show
+
+  // Lag function 
+    spark.sql("SELECT empno,deptno,sal,lag(sal) OVER (PARTITION BY deptno ORDER BY sal desc) as pre_val FROM emp").show()
+    
+    val lagTst = lag($"sal", 1, 0).over(partitionWnd)
+    ExistingData.select($"*", lagTst as "prev_val").show
+    
+  // First value 
+    spark.sql("SELECT empno,deptno,sal,first_value(sal) OVER (PARTITION BY deptno ORDER BY sal desc) as first_val FROM emp").show()
+    
+    val firstValTst = first($"sal").over(partitionWnd)
+    ExistingData.select($"*", firstValTst as "first_val").show
+
+  // Last value 
+    spark.sql("SELECT empno,deptno,sal,last_value(sal) OVER (PARTITION BY deptno ORDER BY sal desc) as last_val FROM emp").show()
+    
+    val lastValTst = last($"sal").over(partitionWnd)
+    ExistingData.select($"*", lastValTst as "last_val").show
+    
+  //Last value
+    val partitionWindowWithUnbounded = Window.partitionBy($"deptno").orderBy($"sal".desc).rowsBetween(Window.currentRow, Window.unboundedFollowing)
+    spark.sql("SELECT empno,deptno,sal,last_value(sal) OVER (PARTITION BY deptno ORDER BY sal desc ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) as last_val FROM emp").show()
+  //Last value 
+    val lastValTest2 = last($"sal").over(partitionWindowWithUnbounded)
+    ExistingData.select($"*", lastValTest2 as "last_val").show
+  //count
+    val countValue = count($"deptno").over(partitionWnd)
+    ExistingData.select($"*", countValue as "count").show
+  //Sum  
+    val SumValue = sum($"sal").over(partitionWnd)
+    ExistingData.select($"*", SumValue as "sum").show
+  //Minimum  
+    val minValue = min($"sal").over(partitionWnd)
+    ExistingData.select($"*", minValue as "sum").show
+  //maximum  
+    val maxValue = max($"sal").over(partitionWnd)
+    ExistingData.select($"*", maxValue as "sum").show
+  //avg  
+    val avgValue = avg($"sal").over(partitionWnd)
+    ExistingData.select($"*", avgValue as "sum").show
+  //cum_dist  
+    val cumdist = cume_dist().over(partitionWnd)
+    ExistingData.select($"*", cumdist as "cumdist").show
+  //percent_rank  
+    val PERCENT_RANK = percent_rank().over(partitionWnd)
+    ExistingData.select($"empno",$"deptno",$"sal", PERCENT_RANK as "Percent").show
+  //Ntile  
+    val NTILE = ntile(3).over(partitionWnd)
+    ExistingData.select($"*", NTILE as "NTILE").show
+   
+  }
+}
